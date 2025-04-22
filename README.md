@@ -21,7 +21,7 @@ Show the current configuration of all tempdb files, as you would see when review
 Returns 1 summary and 2 detail results sets, showing information about the current usage of data and log files.<br>
 <br>
 **Mode 3: A check for tempdb contention** <br>
-a check for metadata or allocation contention in tempdb.<br>
+A check for metadata or allocation contention in tempdb.<br>
 <br>
 Using each of these Modes, you should be able to quickly identify performance issues with your tempdb database.
 
