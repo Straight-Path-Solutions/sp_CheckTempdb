@@ -205,6 +205,7 @@ IF @Mode IN (1,99) BEGIN
         , FileType NVARCHAR(60)
         , [Filegroup] SYSNAME
         , SizeInMB INT
+		, InitialSizeInMB INT
         , Autogrowth NVARCHAR(20)
         , MaxSize NVARCHAR(50)
         , PhysicalName NVARCHAR(260)
@@ -217,6 +218,7 @@ IF @Mode IN (1,99) BEGIN
         , f.[type_desc]
         , COALESCE(g.[name], 'Not Applicable')
         , f.[size]/128
+		, mf.[size]/128
         , CASE f.[growth]
             WHEN 0 THEN 'None'
             ELSE CASE f.[is_percent_growth]
@@ -235,7 +237,10 @@ IF @Mode IN (1,99) BEGIN
         , f.[Physical_Name]
     FROM tempdb.sys.database_files f
     LEFT JOIN tempdb.sys.filegroups g
-        ON f.data_space_id = g.data_space_id;
+        ON f.data_space_id = g.data_space_id
+	LEFT JOIN tempdb.sys.master_files mf
+		ON mf.[file_id] = f.[file_id]
+		AND mf.database_id = 2;
     
     SELECT *
     FROM #Properties
