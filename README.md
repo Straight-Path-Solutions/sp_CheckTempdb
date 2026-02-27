@@ -42,9 +42,9 @@ Although you can simply execute it as is, there are several parameters you cna u
 
 **@UsagePercent** - the default for this is 50, which means it will check to see if any data or log files have more than 50% usage. Use this to check for unusually high activity in tempdb, or an open transaction that is causing excessive usage of tempdb.<p>
 
-**@AvgReadStallMs** - the default is 100, which means it will return information for any tempdb file that has an average read stall value greater than 20 milliseconds. Use this to check for excessive tempdb reads and/or possible storge issues.<p>
+**@AvgReadStallMs** - the default is 100, which means it will return information for any tempdb file that has an average read stall value greater than 100 milliseconds. Use this to check for excessive tempdb reads and/or possible storge issues.<p>
 
-**@AvgWriteStallMs** - the default is 100, which means it will return information for any tempdb file that has an average write stall value greater than 20 milliseconds. Use this to check for excessive tempdb reads and/or possible storge issues.<p>
+**@AvgWriteStallMs** - the default is 100, which means it will return information for any tempdb file that has an average write stall value greater than 100 milliseconds. Use this to check for excessive tempdb reads and/or possible storge issues.<p>
 
 **@VersionCheck** – to check the version number and version date of this tool.<p>
 
