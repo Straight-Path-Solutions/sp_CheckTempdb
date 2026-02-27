@@ -7,21 +7,34 @@ ALTER PROCEDURE [dbo].[sp_CheckTempdb]
     @Mode TINYINT = 99 
 	, @Size CHAR(2) = 'MB'
     , @UsagePercent TINYINT = 50
-	, @AvgReadStallMs INT = 20
-	, @AvgWriteStallMs INT = 20
+	, @AvgReadStallMs INT = 100
+	, @AvgWriteStallMs INT = 100
 	, @Help BIT = 0
+	, @VersionCheck BIT = 0
 
 WITH RECOMPILE
 AS
 SET NOCOUNT ON;
+
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 DECLARE 
     @Version VARCHAR(10) = NULL
 	, @VersionDate DATETIME = NULL
 
 SELECT
-    @Version = '1.0'
-    , @VersionDate = '20250422';
+    @Version = '2026.2.1'
+    , @VersionDate = '20260219';
+
+/* Version check */
+IF @VersionCheck = 1 BEGIN
+
+	SELECT
+		@Version AS VersionNumber
+		, @VersionDate AS VersionDate
+
+	RETURN;
+	END;  
 
 /* @Help = 1 */
 IF @Help = 1 BEGIN
@@ -38,7 +51,7 @@ IF @Help = 1 BEGIN
     
     Known limitations of this version:
     - sp_CheckTempdb only works Microsoft-supported versions of SQL Server, so 
-    that means SQL Server 2014 or later.
+    that means SQL Server 2016 or later.
     - sp_CheckTempdb will work with some earlier versions of SQL Server, but it 
     will skip a few checks. The results should still be valid and helpful, but you
     should really consider upgrading to a newer version.
@@ -61,12 +74,15 @@ IF @Help = 1 BEGIN
     @AvgReadStallMs
 	      0-? indicates average value in milliseconds for read stalls
 		  to report on if exceeded
-		  20ms is the default
+		  100ms is the default
 
     @AvgWriteStallMs
 	      0-? indicates average value in milliseconds for write stalls
 		  to report on if exceeded
-		  20ms is the default
+		  100ms is the default
+
+    @VersionCheck use to check version number and date
+
 
     MIT License
     
@@ -76,7 +92,7 @@ IF @Help = 1 BEGIN
     	
     All other copyrights for sp_CheckTempdb are held by Straight Path Solutions.
     
-    Copyright 2025 Straight Path IT Solutions, LLC
+    Copyright 2026 Straight Path IT Solutions, LLC
     
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -108,7 +124,7 @@ IF OBJECT_ID('tempdb..#Results') IS NOT NULL
 CREATE TABLE #Results (
     CategoryID TINYINT
 	, CheckID INT
-    , Importance TINYINT
+    , [Importance] TINYINT
 	, CheckName VARCHAR(50)
 	, Issue NVARCHAR(1000)
 	, DatabaseName NVARCHAR(255)
@@ -201,12 +217,12 @@ IF @Mode IN (1,99) BEGIN
     
     CREATE TABLE #Properties (
         FileId INT
-        , LogicalName SYSNAME
+        , LogicalName sysname
         , FileType NVARCHAR(60)
-        , [Filegroup] SYSNAME
+        , [Filegroup] sysname
         , SizeInMB INT
         , Autogrowth NVARCHAR(20)
-        , MaxSize NVARCHAR(50)
+        , [MaxSize] NVARCHAR(50)
         , PhysicalName NVARCHAR(260)
         );
     
@@ -501,10 +517,10 @@ Query modified from original written by Haripriya Naidu: https://gohigh.substack
             , page_info.page_type_desc AS PageTypeDesc
             , CASE 
                 WHEN page_info.page_type_desc IN('SGAM_PAGE','GAM_PAGE', 'PFS_PAGE') 
-                    AND WAIT_TYPE IN ('PAGELATCH_SH','PAGELATCH_UP','PAGELATCH_EX')
+                    AND wait_type IN ('PAGELATCH_SH','PAGELATCH_UP','PAGELATCH_EX')
                     THEN 'ALLOCATION CONTENTION'
                 WHEN page_info.page_type_desc IN ('DATA_PAGE', 'INDEX_PAGE') 
-                    AND WAIT_TYPE IN ('PAGELATCH_SH','PAGELATCH_UP','PAGELATCH_EX')
+                    AND wait_type IN ('PAGELATCH_SH','PAGELATCH_UP','PAGELATCH_EX')
                     THEN 'METADATA CONTENTION'
                 END AS AllocationType
         FROM master.sys.dm_exec_requests AS er
@@ -518,6 +534,26 @@ Query modified from original written by Haripriya Naidu: https://gohigh.substack
 
     END;
 IF @Mode IN (0,99) BEGIN
+
+/* tempdb encrypted */
+IF (
+    SELECT is_encrypted
+    FROM sys.databases
+    WHERE name = 'tempdb'
+    )  = 1
+
+    INSERT #Results
+    SELECT
+        3
+        , 351
+        , 3
+		, 'tempdb encrypted'
+        , 'The tempdb database is currently encrypted.'
+	    , 'tempdb'
+	    , 'The tempdb database is automatically encrypted when any user database has Transparent Data Encryption (TDE) enabled.'
+	    , 'This isn''t necessarily a problem, but encryption can potentially impact performance.'
+	    , 'https://straightpathsql.com/ct/tempdb-encrypted';
+
 
 /* Instance online over 180 days */
     IF (
@@ -571,13 +607,31 @@ IF @Mode IN (0,99) BEGIN
             , 605
             , 2
 			, 'tempdb file with no growth allowed'
-            , 'The file ' + [name] + ' is now allowed to grow beyond its current size'
+            , 'The file ' + [name] + ' is not allowed to grow beyond its current size'
 			, 'tempdb'
 			, 'If you need more space than the current file size, your transactions may freeze or fail.'
 			, 'Review the current file size and usage to see if you want to allow for growth.'
 			, 'https://straightpathsql.com/ct/tempdb-no-growth-allowed'
         FROM tempdb.sys.database_files
 		WHERE [growth] = 0;
+
+
+/* tempdb files with max size set */
+    INSERT #Results
+    SELECT
+        6
+        , 619
+        , 1
+        , 'tempdb file with max size set'
+        , 'The file ' + [name] + ' is not allowed to grow beyond ' + CONVERT(NVARCHAR(50), [max_size]/128) + ' MB.'
+        , 'tempdb'
+        , 'If this file grows to the max size, your transactions may freeze or fail.'
+        , 'If tempdb files are isolated on their own drive(s), change the file growth settings to allow for unlimited growth.'
+        , 'https://straightpathsql.com/ct/tempdb-max-file-size'
+    FROM tempdb.sys.database_files
+    WHERE [growth] > 0
+        AND [max_size] NOT IN (0, -1);
+
 
 /* Number of data files not recommended */
     IF @NumberOfCPUCores < 8 
@@ -631,12 +685,9 @@ IF @Mode IN (0,99) BEGIN
 
 /* Uneven growth settings */
 	IF (
-    SELECT data_space_id
+    SELECT COUNT(DISTINCT CAST(growth AS VARCHAR(20)) + '_' + CAST(is_percent_growth AS CHAR(1)))
     FROM tempdb.sys.database_files
-    WHERE [type_desc] = 'ROWS'
-    GROUP BY data_space_id
-    HAVING COUNT(DISTINCT growth) > 1 
-        OR COUNT(DISTINCT is_percent_growth) > 1
+    WHERE [type] = 0
         ) > 1
 
         INSERT #Results
@@ -786,14 +837,14 @@ IF @Mode IN (0,99) BEGIN
 					, 'Trace Flag 1118'
                     , 'Trace flag 1118 not enabled globally.'
         			, 'tempdb'
-        			, 'For this version of SQL Server, we recommend enabling trace flag 1117 to reduce SGAM (allocation page) waits.'
+        			, 'For this version of SQL Server, we recommend enabling trace flag 1118 to reduce SGAM (allocation page) waits.'
         			, 'Enable this trace flag in the startup parameters of the SQL Server instance.'
         			, 'https://straightpathsql.com/ct/trace-flag-1118';
     
         END;
 
 /* Memory-optimized tempdb metadata */
-    IF @SQLVersionMajor <= 15 BEGIN
+    IF @SQLVersionMajor >= 15 BEGIN
     
         IF (SELECT value_in_use FROM sys.configurations WHERE [name] = 'tempdb metadata memory-optimized') = 1   
                 INSERT #Results
@@ -815,7 +866,7 @@ IF @Mode IN (0,99) BEGIN
 
     CREATE TABLE #AvgStall (
         FileId INT
-        , LogicalName SYSNAME
+        , LogicalName sysname
         , FileType NVARCHAR(60)
         , AvgReadStallMs INT
         , AvgWriteStallMs INT
@@ -869,11 +920,11 @@ IF @Mode IN (0,99) BEGIN
             WHEN 6 THEN 'Reliability'
 		    WHEN 7 THEN 'Performance'
 		END AS Category
-        , CASE Importance
+        , CASE [Importance]
             WHEN 1 THEN 'High'
 		    WHEN 2 THEN 'Medium'
 			ELSE 'Low'
-		END AS Importance
+		END AS [Importance]
         , CheckName
         , Issue
         , DatabaseName
@@ -882,10 +933,10 @@ IF @Mode IN (0,99) BEGIN
         , ReadMoreURL
     FROM #Results
     ORDER BY
-        Importance
+        [Importance]
 		, Category
 		, CheckName;
 
     END;
 
-
+GO
