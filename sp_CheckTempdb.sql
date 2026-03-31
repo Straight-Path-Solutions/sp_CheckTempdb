@@ -23,8 +23,8 @@ DECLARE
 	, @VersionDate DATETIME = NULL
 
 SELECT
-    @Version = '2026.2.1'
-    , @VersionDate = '20260219';
+    @Version = '2026.3.1'
+    , @VersionDate = '20260320';
 
 /* Version check */
 IF @VersionCheck = 1 BEGIN
@@ -220,7 +220,8 @@ IF @Mode IN (1,99) BEGIN
         , LogicalName sysname
         , FileType NVARCHAR(60)
         , [Filegroup] sysname
-        , SizeInMB INT
+        , InitialSizeMB INT
+        , CurrentSizeInMB INT
         , Autogrowth NVARCHAR(20)
         , [MaxSize] NVARCHAR(50)
         , PhysicalName NVARCHAR(260)
@@ -232,6 +233,7 @@ IF @Mode IN (1,99) BEGIN
         , f.[name]
         , f.[type_desc]
         , COALESCE(g.[name], 'Not Applicable')
+        , mf.[size]/128
         , f.[size]/128
         , CASE f.[growth]
             WHEN 0 THEN 'None'
@@ -250,12 +252,15 @@ IF @Mode IN (1,99) BEGIN
             END
         , f.[Physical_Name]
     FROM tempdb.sys.database_files f
+    INNER JOIN master.sys.master_files mf
+        ON f.[file_id] = mf.[file_id]
+        AND mf.[database_id] = DB_ID('tempdb')
     LEFT JOIN tempdb.sys.filegroups g
         ON f.data_space_id = g.data_space_id;
     
     SELECT *
     FROM #Properties
-    ORDER BY 1;
+    ORDER BY FileId;
     END;
 
 IF @Mode IN (2) BEGIN
@@ -552,7 +557,7 @@ IF (
 	    , 'tempdb'
 	    , 'The tempdb database is automatically encrypted when any user database has Transparent Data Encryption (TDE) enabled.'
 	    , 'This isn''t necessarily a problem, but encryption can potentially impact performance.'
-	    , 'https://straightpathsql.com/ct/tempdb-encrypted';
+	    , 'https://straightpathsql.com/check/tempdb-encrypted';
 
 
 /* Instance online over 180 days */
@@ -574,7 +579,7 @@ IF (
 	    , NULL
 	    , 'Your SQL Server instance hasn''t been restarted since ' + CONVERT(VARCHAR(20), create_date, 101) + '. You are probably missing some important updates.'
 	    , 'Schedule a time to update your SQL Server instance, and maybe the operating system as well.'
-	    , 'https://straightpathsql.com/ct/instance-uptime'
+	    , 'https://straightpathsql.com/check/instance-uptime'
     FROM sys.databases
     WHERE database_id = 2;
 
@@ -589,7 +594,7 @@ IF (
 		, 'tempdb'
 		, 'One poorly written query can cause all space on the C drive to be used, which could cause the operating system to freeze.'
 		, 'When possible, create tempdb files on drives other than the C drive.'
-		, 'https://straightpathsql.com/ct/tempdb-files-on-c-drive'
+		, 'https://straightpathsql.com/check/tempdb-files-on-c-drive'
     FROM tempdb.sys.database_files
     WHERE [Physical_Name] LIKE 'C:\%'
 	    AND (SELECT COUNT(DISTINCT SUBSTRING ([Physical_Name], 1, 1)) FROM tempdb.sys.database_files) > 1;
@@ -611,7 +616,7 @@ IF (
 			, 'tempdb'
 			, 'If you need more space than the current file size, your transactions may freeze or fail.'
 			, 'Review the current file size and usage to see if you want to allow for growth.'
-			, 'https://straightpathsql.com/ct/tempdb-no-growth-allowed'
+			, 'https://straightpathsql.com/check/tempdb-no-growth-allowed'
         FROM tempdb.sys.database_files
 		WHERE [growth] = 0;
 
@@ -627,7 +632,7 @@ IF (
         , 'tempdb'
         , 'If this file grows to the max size, your transactions may freeze or fail.'
         , 'If tempdb files are isolated on their own drive(s), change the file growth settings to allow for unlimited growth.'
-        , 'https://straightpathsql.com/ct/tempdb-max-file-size'
+        , 'https://straightpathsql.com/check/tempdb-max-file-size'
     FROM tempdb.sys.database_files
     WHERE [growth] > 0
         AND [max_size] NOT IN (0, -1);
@@ -646,7 +651,7 @@ IF (
     			, 'tempdb'
     			, 'Microsoft recommends having the same number of data files as CPU cores (up to 8) to reduce file contention.'
     			, 'Configure tempdb to have ' + CONVERT(VARCHAR(3), @NumberOfCPUCores) + ' evenly sized data files.'
-    			, 'https://straightpathsql.com/ct/tempdb-data-file-count'
+    			, 'https://straightpathsql.com/check/tempdb-data-file-count'
             WHERE @NumberOfDataFiles <> @NumberOfCPUCores;
     
     IF @NumberOfCPUCores >= 8 
@@ -661,7 +666,7 @@ IF (
     			, 'tempdb'
     			, 'Microsoft recommends having the same number of data files as CPU cores (up to 8) to reduce file contention.'
     			, 'If this configuration was not intentional, configure tempdb to have 8 evenly sized data files.'
-    			, 'https://straightpathsql.com/ct/tempdb-data-file-count'
+    			, 'https://straightpathsql.com/check/tempdb-data-file-count'
             WHERE @NumberOfDataFiles <> 8;
 
 /* Unevenly sized data files */
@@ -681,7 +686,7 @@ IF (
 			, 'tempdb'
 			, 'Unequally sized data files result in an uneven distribution of usage among the data files.'
 			, 'Make sure all tempdb data files are sized equally and have the same growth settings.'
-			, 'https://straightpathsql.com/ct/tempdb-data-file-size';
+			, 'https://straightpathsql.com/check/tempdb-data-file-size';
 
 /* Uneven growth settings */
 	IF (
@@ -700,7 +705,7 @@ IF (
 			, 'tempdb'
 			, 'Uneven growth rates result in uneven sized data files, which result in an uneven distribution of usage among the data files.'
 			, 'Make sure all tempdb data files are sized equally and have the same growth settings.'
-			, 'https://straightpathsql.com/ct/tempdb-data-file-growth';
+			, 'https://straightpathsql.com/check/tempdb-data-file-growth';
 
 /* Log file larger than data files */
      IF (
@@ -725,7 +730,7 @@ IF (
 			, 'tempdb'
 			, 'This may indicate you have or had a very large transaction.'
 			, 'Use a tool like sp_WhoIsActive to make sure you don''t have any runaway transactions in tempdb.'
-			, 'https://straightpathsql.com/ct/tempdb-log-file-size';
+			, 'https://straightpathsql.com/check/tempdb-log-file-size';
 
 
 /* Files with percentage growth rates */
@@ -745,7 +750,7 @@ IF (
 			, 'tempdb'
 			, 'Percentage growth rates will lead to a high number of growth events.'
 			, 'This can lead to slow performance during growths, so we recommend using a fixed growth rate of 64 MB or greater.'
-			, 'https://straightpathsql.com/ct/tempdb-data-file-growth'
+			, 'https://straightpathsql.com/check/tempdb-data-file-growth'
         FROM tempdb.sys.database_files
         WHERE [is_percent_growth] = 1;
 
@@ -767,7 +772,7 @@ IF (
 			, 'tempdb'
 			, 'Small growth rates can lead to a high number of growth events.'
 			, 'Microsoft sets default growth rates of 64 MB, so we recommend that as a minimum.'
-			, 'https://straightpathsql.com/ct/tempdb-data-file-growth'
+			, 'https://straightpathsql.com/check/tempdb-data-file-growth'
         FROM tempdb.sys.database_files
         WHERE [is_percent_growth] = 0
         AND [growth] BETWEEN 1 AND 8191;
@@ -789,7 +794,7 @@ IF (
 			, 'tempdb'
 			, 'You don''t need (or want) multiple log files in a SQL Server database.'
 			, 'Empty and remove any extra log files.'
-			, 'https://straightpathsql.com/ct/tempdb-multiple-log-files';
+			, 'https://straightpathsql.com/check/tempdb-multiple-log-files';
 
 /* Files with high usage */
 	IF EXISTS (
@@ -808,7 +813,7 @@ IF (
 			, 'tempdb'
 			, 'Is this amount of tempdb activity expected?'
 			, 'Use @Mode = 2 to see what kinds of data is in tempdb, and what sessions are using tempdb.'
-			, 'https://straightpathsql.com/ct/tempdb-files-with-high-usage'
+			, 'https://straightpathsql.com/check/tempdb-files-with-high-usage'
         FROM tempdb.sys.database_files
         WHERE ((CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT) * 1.)/([size]* 1.) * 100) > @UsagePercent;
 
@@ -826,7 +831,7 @@ IF (
         			, 'tempdb'
         			, 'For this version of SQL Server, we recommend enabling trace flag 1117 to grow all files in a filegroup at the same time.'
         			, 'Enable this trace flag in the startup parameters of the SQL Server instance.'
-        			, 'https://straightpathsql.com/ct/trace-flag-1117';
+        			, 'https://straightpathsql.com/check/trace-flag-1117';
     
         IF NOT EXISTS (SELECT * FROM #TraceFlag WHERE TraceFlag = '1118')    
                 INSERT #Results
@@ -839,7 +844,7 @@ IF (
         			, 'tempdb'
         			, 'For this version of SQL Server, we recommend enabling trace flag 1118 to reduce SGAM (allocation page) waits.'
         			, 'Enable this trace flag in the startup parameters of the SQL Server instance.'
-        			, 'https://straightpathsql.com/ct/trace-flag-1118';
+        			, 'https://straightpathsql.com/check/trace-flag-1118';
     
         END;
 
@@ -857,7 +862,7 @@ IF (
         			, 'tempdb'
         			, 'This feature moves some of the most commonly used system tables in tempdb to memory-optimized tables.'
         			, 'Please be sure you meant to enable this feature.'
-        			, 'https://straightpathsql.com/ct/tempdb-memory-optimized';
+        			, 'https://straightpathsql.com/check/tempdb-memory-optimized';
         END;
 
 /* Slow reads and writes to files */
@@ -897,7 +902,7 @@ IF (
         , 'tempdb'
         , 'This may be an indicator of issues with your I/O subsystem, or that you have queries requiring too many reads.'
         , 'Review your I/O performance and SQL Server''s wait statistics, as this may not actually be a problem.'
-        , 'https://straightpathsql.com/ct/tempdb-slow-reads-and-writes'
+        , 'https://straightpathsql.com/check/tempdb-slow-reads-and-writes'
     FROM #AvgStall
     WHERE AvgReadStallMs > @AvgReadStallMs;
 
@@ -911,10 +916,11 @@ IF (
         , 'tempdb'
         , 'This may be an indicator of issues with your I/O subsystem, or that you have queries requiring too many writes.'
         , 'Review your I/O performance and SQL Server''s wait statistics, as this may not actually be a problem.'
-        , 'https://straightpathsql.com/ct/tempdb-slow-reads-and-writes'
+        , 'https://straightpathsql.com/check/tempdb-slow-reads-and-writes'
     FROM #AvgStall
     WHERE AvgWriteStallMs > @AvgWriteStallMs;
-	
+
+/* Return Results */	
 	SELECT
 	    CASE CategoryID
             WHEN 6 THEN 'Reliability'
