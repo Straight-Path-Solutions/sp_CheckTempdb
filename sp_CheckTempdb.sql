@@ -23,15 +23,15 @@ DECLARE
 	, @VersionDate DATETIME = NULL
 
 SELECT
-    @Version = '2026.3.1'
-    , @VersionDate = '20260320';
+    @Version = '2026.4.1'
+    , @VersionDate = '20260420';
 
 /* Version check */
 IF @VersionCheck = 1 BEGIN
 
 	SELECT
 		@Version AS VersionNumber
-		, @VersionDate AS VersionDate
+		, @VersionDate AS VersionDate;
 
 	RETURN;
 	END;  
@@ -42,8 +42,8 @@ IF @Help = 1 BEGIN
 /*
     sp_CheckTempdb from https://straightpathsql.com/
 
-	Version: ' + @Version + ' updated ' + CONVERT(VARCHAR(10), @VersionDate, 101) + '
-    	
+	Version: ' + @Version + ', updated ' + CONVERT(VARCHAR(10), @VersionDate, 101) + '
+    
     This stored procedure checks your SQL Server tempdb database for issues and 
     provides a list of findings with action items, or if you prefer, allows you 
     to review the current status of tempdb in a few different ways if you need
@@ -63,9 +63,10 @@ IF @Help = 1 BEGIN
 		   2=Summary results of what is currently using space in tempdb
 		    (includes data and log files)
            3=Check for tempdb contention (SQL Server 2019 and later only)
+           99=Show the result sets for both @Mode = 1 and @Mode = 0 (default)
 
-    @Size ''MB'' displays sizes in megabytes
-          ''GB'' displays sizes in gigabytes
+    @Size ''MB'' displays sizes in megabytes for @Mode = 2
+          ''GB'' displays sizes in gigabytes for @Mode = 2
 
     @UsagePercent
 	      0-100 indicates percentage of usage of tempdb files to check for
@@ -126,10 +127,10 @@ CREATE TABLE #Results (
 	, CheckID INT
     , [Importance] TINYINT
 	, CheckName VARCHAR(50)
-	, Issue NVARCHAR(1000)
+	, Issue NVARCHAR(MAX)
 	, DatabaseName NVARCHAR(255)
-	, Details NVARCHAR(1000)
-	, ActionStep NVARCHAR(1000)
+	, Details NVARCHAR(MAX)
+	, ActionStep NVARCHAR(MAX)
 	, ReadMoreURL XML
 	);
 
@@ -151,7 +152,6 @@ CREATE TABLE #SQLVersions (
 INSERT #SQLVersions
 VALUES
 	('2008', 10)
-	, ('2008 R2', 10.5)
 	, ('2012', 11)
 	, ('2014', 12)
 	, ('2016', 13)
@@ -164,7 +164,7 @@ SELECT @SQLVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
 
 SELECT 
 	@SQLVersionMajor = SUBSTRING(@SQLVersion, 1,CHARINDEX('.', @SQLVersion) + 1 )
-	, @SQLVersionMinor = PARSENAME(CONVERT(varchar(32), @SQLVersion), 2);
+	, @SQLVersionMinor = PARSENAME(CONVERT(VARCHAR(32), @SQLVersion), 2);
 
 
 	/* check for unsupported version */	
@@ -185,10 +185,13 @@ IF @SQLVersionMajor < 11 BEGIN
 	END; 
 
 IF @UsagePercent > 100
-    SET @UsagePercent = 100
+    SET @UsagePercent = 100;
 
-IF @UsagePercent < 0
-    SET @UsagePercent = 0
+IF @AvgReadStallMs < 0
+    SET @AvgReadStallMs = 0;
+
+IF @AvgWriteStallMs < 0
+    SET @AvgWriteStallMs = 0;
 
 DECLARE
     @NumberOfDataFiles INT
@@ -201,6 +204,9 @@ WHERE [type] = 0;
 SELECT @NumberOfCPUCores = cpu_count
 FROM sys.dm_os_sys_info;
 
+IF OBJECT_ID('tempdb..#TraceFlag') IS NOT NULL
+    DROP TABLE #TraceFlag;
+
 CREATE TABLE #TraceFlag (
     TraceFlag VARCHAR(10)
     , [Status] BIT
@@ -209,7 +215,7 @@ CREATE TABLE #TraceFlag (
 	)
 
 INSERT INTO #TraceFlag
-EXEC ( ' DBCC TRACESTATUS(-1) WITH NO_INFOMSGS');
+EXEC ( 'DBCC TRACESTATUS(-1) WITH NO_INFOMSGS');
 
 IF @Mode IN (1,99) BEGIN
     IF OBJECT_ID('tempdb..#Properties') IS NOT NULL
@@ -600,25 +606,19 @@ IF (
 	    AND (SELECT COUNT(DISTINCT SUBSTRING ([Physical_Name], 1, 1)) FROM tempdb.sys.database_files) > 1;
 
 /* tempdb files with no growth allowed */
-	IF EXISTS (
-        SELECT *
-        FROM tempdb.sys.database_files
-        WHERE [growth] = 0
-        )
-
-        INSERT #Results
-        SELECT
-            6
-            , 605
-            , 2
-			, 'tempdb file with no growth allowed'
-            , 'The file ' + [name] + ' is not allowed to grow beyond its current size'
-			, 'tempdb'
-			, 'If you need more space than the current file size, your transactions may freeze or fail.'
-			, 'Review the current file size and usage to see if you want to allow for growth.'
-			, 'https://straightpathsql.com/check/tempdb-no-growth-allowed'
-        FROM tempdb.sys.database_files
-		WHERE [growth] = 0;
+    INSERT #Results
+    SELECT
+        6
+        , 605
+        , 2
+		, 'tempdb file with no growth allowed'
+        , 'The file ' + [name] + ' is not allowed to grow beyond its current size'
+		, 'tempdb'
+		, 'If you need more space than the current file size, your transactions may freeze or fail.'
+		, 'Review the current file size and usage to see if you want to allow for growth.'
+		, 'https://straightpathsql.com/check/tempdb-no-growth-allowed'
+    FROM tempdb.sys.database_files
+	WHERE [growth] = 0;
 
 
 /* tempdb files with max size set */
@@ -652,7 +652,8 @@ IF (
     			, 'Microsoft recommends having the same number of data files as CPU cores (up to 8) to reduce file contention.'
     			, 'Configure tempdb to have ' + CONVERT(VARCHAR(3), @NumberOfCPUCores) + ' evenly sized data files.'
     			, 'https://straightpathsql.com/check/tempdb-data-file-count'
-            WHERE @NumberOfDataFiles <> @NumberOfCPUCores;
+            WHERE @NumberOfDataFiles <> @NumberOfCPUCores
+                AND @NumberOfDataFiles <= 16;
     
     IF @NumberOfCPUCores >= 8 
     
@@ -667,7 +668,23 @@ IF (
     			, 'Microsoft recommends having the same number of data files as CPU cores (up to 8) to reduce file contention.'
     			, 'If this configuration was not intentional, configure tempdb to have 8 evenly sized data files.'
     			, 'https://straightpathsql.com/check/tempdb-data-file-count'
-            WHERE @NumberOfDataFiles <> 8;
+            WHERE @NumberOfDataFiles > 8
+                AND @NumberOfDataFiles <= 16;
+
+/* number of data files exceeds Microsoft recommendations */
+    IF @NumberOfDataFiles > 16
+
+            INSERT #Results
+            SELECT
+                7
+				, 730
+                , 1
+				, 'More than 16 tempdb data files'
+                , 'There are ' + CONVERT(VARCHAR(3), @NumberOfDataFiles) + ' tempdb data files.'
+    			, 'tempdb'
+    			, 'Microsoft recommends not having more than 16 data files.'
+    			, 'If this configuration was not intentional, configure tempdb to have 16 or fewer evenly sized data files.'
+    			, 'https://straightpathsql.com/check/tempdb-data-file-count';
 
 /* Unevenly sized data files */
 	IF (
@@ -734,48 +751,35 @@ IF (
 
 
 /* Files with percentage growth rates */
-	IF EXISTS (
-        SELECT *
-        FROM tempdb.sys.database_files
-        WHERE [is_percent_growth] = 1
-        )
-
-        INSERT #Results
-        SELECT
-            7
-			, 711
-            , 1
-			, 'tempdb file with percentage growth rates'
-            , 'The file ' + [name] + ' has a percentage growth rate'
-			, 'tempdb'
-			, 'Percentage growth rates will lead to a high number of growth events.'
-			, 'This can lead to slow performance during growths, so we recommend using a fixed growth rate of 64 MB or greater.'
-			, 'https://straightpathsql.com/check/tempdb-data-file-growth'
-        FROM tempdb.sys.database_files
-        WHERE [is_percent_growth] = 1;
+    INSERT #Results
+    SELECT
+        7
+		, 711
+        , 1
+		, 'tempdb file with percentage growth rates'
+        , 'The file ' + [name] + ' has a percentage growth rate'
+		, 'tempdb'
+		, 'Percentage growth rates will lead to a high number of growth events.'
+		, 'This can lead to slow performance during growths, so we recommend using a fixed growth rate of 64 MB or greater.'
+		, 'https://straightpathsql.com/check/tempdb-data-file-growth'
+    FROM tempdb.sys.database_files
+    WHERE [is_percent_growth] = 1;
 
 /* Files with growth rates less than 64 MB */
-	IF EXISTS (
-        SELECT *
-        FROM tempdb.sys.database_files
-        WHERE [is_percent_growth] = 0
-        AND [growth] BETWEEN 1 AND 8191
-        )
-
-        INSERT #Results
-        SELECT
-            7
-			, 712
-            , 1
-			, 'tempdb file with growth rates less than 64 MB'
-            , 'The file ' + [name] + ' has a growth rate of only ' + CONVERT(NVARCHAR(50), [growth]/128) + ' MB'
-			, 'tempdb'
-			, 'Small growth rates can lead to a high number of growth events.'
-			, 'Microsoft sets default growth rates of 64 MB, so we recommend that as a minimum.'
-			, 'https://straightpathsql.com/check/tempdb-data-file-growth'
-        FROM tempdb.sys.database_files
-        WHERE [is_percent_growth] = 0
-        AND [growth] BETWEEN 1 AND 8191;
+    INSERT #Results
+    SELECT
+        7
+		, 712
+        , 1
+		, 'tempdb file with growth rates less than 64 MB'
+        , 'The file ' + [name] + ' has a growth rate of only ' + CONVERT(NVARCHAR(50), [growth]/128) + ' MB'
+		, 'tempdb'
+		, 'Small growth rates can lead to a high number of growth events.'
+		, 'Microsoft sets default growth rates of 64 MB, so we recommend that as a minimum.'
+		, 'https://straightpathsql.com/check/tempdb-data-file-growth'
+    FROM tempdb.sys.database_files
+    WHERE [is_percent_growth] = 0
+    AND [growth] BETWEEN 1 AND 8191;
 
 /* Multiple log files */
 	IF (
@@ -797,25 +801,19 @@ IF (
 			, 'https://straightpathsql.com/check/tempdb-multiple-log-files';
 
 /* Files with high usage */
-	IF EXISTS (
-        SELECT *
-        FROM tempdb.sys.database_files
-        WHERE ((CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT) * 1.)/([size]* 1.) * 100) > @UsagePercent
-        )
-
-        INSERT #Results
-        SELECT
-            7
-			, 714
-            , 1
-			, 'tempdb file with high usage'
-            , 'The file ' + [name] + ' has more than ' + CONVERT(VARCHAR(3), @UsagePercent) + ' percent usage.'
-			, 'tempdb'
-			, 'Is this amount of tempdb activity expected?'
-			, 'Use @Mode = 2 to see what kinds of data is in tempdb, and what sessions are using tempdb.'
-			, 'https://straightpathsql.com/check/tempdb-files-with-high-usage'
-        FROM tempdb.sys.database_files
-        WHERE ((CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT) * 1.)/([size]* 1.) * 100) > @UsagePercent;
+    INSERT #Results
+    SELECT
+        7
+		, 714
+        , 1
+		, 'tempdb file with high usage'
+        , 'The file ' + [name] + ' has more than ' + CONVERT(VARCHAR(3), @UsagePercent) + ' percent usage.'
+		, 'tempdb'
+		, 'Is this amount of tempdb activity expected?'
+		, 'Use @Mode = 2 to see what kinds of data is in tempdb, and what sessions are using tempdb.'
+		, 'https://straightpathsql.com/check/tempdb-files-with-high-usage'
+    FROM tempdb.sys.database_files
+    WHERE ((CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT) * 1.)/([size]* 1.) * 100) > @UsagePercent;
 
 /* Trace Flag 1117 and 1118 */
     IF @SQLVersionMajor < 13 BEGIN
@@ -882,15 +880,14 @@ IF (
         f.[file_id]
         , f.[name]
         , f.[type_desc]
-        , CAST(s.io_stall_read_ms / ( 1.0 * s.num_of_reads ) AS INT)
-        , CAST(s.io_stall_write_ms / ( 1.0 * s.num_of_writes ) AS INT)
+        , CAST(s.io_stall_read_ms / NULLIF(1.0 * s.num_of_reads, 0) AS INT)
+        , CAST(s.io_stall_write_ms / NULLIF(1.0 * s.num_of_writes, 0) AS INT)
     FROM sys.dm_io_virtual_file_stats(NULL, NULL) s
     INNER JOIN sys.master_files f
         ON s.file_id = f.file_id
         AND s.database_id = f.database_id
-    WHERE s.num_of_reads > 0
-        AND s.num_of_writes > 0
-        AND s.database_id = 2
+    WHERE s.database_id = 2
+        AND (s.num_of_reads > 0 OR s.num_of_writes > 0);
 
     INSERT #Results
     SELECT
